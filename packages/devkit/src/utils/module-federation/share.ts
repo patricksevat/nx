@@ -5,14 +5,16 @@ import type {
 } from './models';
 import { AdditionalSharedConfig, SharedFunction } from './models';
 import { dirname, join, normalize } from 'path';
-import { readRootPackageJson } from './package-json';
+import { readProjectPackageJson, readRootPackageJson } from './package-json';
 import { readTsPathMappings, getRootTsConfigPath } from './typescript';
 import {
   collectPackageSecondaryEntryPoints,
   collectWorkspaceLibrarySecondaryEntryPoints,
 } from './secondary-entry-points';
-import type { ProjectGraph } from 'nx/src/config/project-graph';
+import type { ProjectConfiguration } from 'nx/src/config/workspace-json-project-json';
+import type { ProjectGraph, ProjectGraphProjectNode } from 'nx/src/config/project-graph';
 import { requireNx } from '../../../nx';
+import { Tree, names, readJson, readNxJson } from '../../../';
 
 const { workspaceRoot, logger } = requireNx();
 
@@ -25,6 +27,7 @@ const { workspaceRoot, logger } = requireNx();
  */
 export function shareWorkspaceLibraries(
   libraries: WorkspaceLibrary[],
+  projectGraph: ProjectGraph,
   tsConfigPath = process.env.NX_TSCONFIG_PATH ?? getRootTsConfigPath()
 ): SharedWorkspaceLibraryConfig {
   if (!libraries) {
@@ -36,7 +39,7 @@ export function shareWorkspaceLibraries(
     return getEmptySharedLibrariesConfig();
   }
 
-  const pathMappings: { name: string; path: string }[] = [];
+  const pathMappings: { name: string; path: string, nameWithoutNpmScope: string }[] = [];
   for (const [key, paths] of Object.entries(tsconfigPathAliases)) {
     const library = libraries.find((lib) => lib.importKey === key);
     if (!library) {
@@ -52,12 +55,14 @@ export function shareWorkspaceLibraries(
       pathMappings.push({
         name,
         path,
+        nameWithoutNpmScope: library.name,
       })
     );
 
     pathMappings.push({
       name: key,
       path: normalize(join(workspaceRoot, paths[0])),
+      nameWithoutNpmScope: library.name,
     });
   }
 
@@ -71,10 +76,28 @@ export function shareWorkspaceLibraries(
       ),
     getLibraries: (eager?: boolean): Record<string, SharedLibraryConfig> =>
       pathMappings.reduce(
-        (libraries, library) => ({
-          ...libraries,
-          [library.name]: { requiredVersion: false, eager },
-        }),
+        (libraries, library) => {
+          const project = projectGraph.nodes[library.nameWithoutNpmScope];
+          const isBuildableProject = project && isBuildable('build', project);
+          
+          let sharedLibConfig: SharedLibraryConfig = { requiredVersion: false, eager };
+          
+          if(project && isBuildableProject) {
+            // TODO: perhaps make this a bit more defensive. Not sure what happens when the require fails
+            const outputVersion = require(join(workspaceRoot, project.data.targets.build.options.outputPath, 'package.json')).version;
+
+            sharedLibConfig = {
+              requiredVersion: outputVersion || false,
+              singleton: false,
+              strictVersion: true,
+            }
+          }
+
+          return ({
+            ...libraries,
+            [library.name]: sharedLibConfig,
+          });
+        },
         {} as Record<string, SharedLibraryConfig>
       ),
     getReplacementPlugin: () =>
@@ -104,11 +127,12 @@ export function shareWorkspaceLibraries(
  */
 export function getNpmPackageSharedConfig(
   pkgName: string,
-  version: string
+  version: string,
+  project: ProjectConfiguration
 ): SharedLibraryConfig | undefined {
   if (!version) {
     logger.warn(
-      `Could not find a version for "${pkgName}" in the root "package.json" ` +
+      `Could not find a version for "${pkgName}" in upward "package.json" files from ${project.root}` +
         'when collecting shared packages for the Module Federation setup. ' +
         'The package will not be shared.'
     );
@@ -128,19 +152,28 @@ export function getNpmPackageSharedConfig(
  * @param packages - Array of package names as strings
  */
 export function sharePackages(
-  packages: string[]
+  packages: string[],
+  project: ProjectConfiguration
 ): Record<string, SharedLibraryConfig> {
   const pkgJson = readRootPackageJson();
+  const projectPkgJson = readProjectPackageJson(project);
   const allPackages: { name: string; version: string }[] = [];
   packages.forEach((pkg) => {
-    const pkgVersion =
+    const projectPkgVersion =
+      projectPkgJson.dependencies?.[pkg] ?? projectPkgJson.devDependencies?.[pkg];
+    const rootPkgVersion =
       pkgJson.dependencies?.[pkg] ?? pkgJson.devDependencies?.[pkg];
-    allPackages.push({ name: pkg, version: pkgVersion });
-    collectPackageSecondaryEntryPoints(pkg, pkgVersion, allPackages);
+
+    // Local version takes precedence over global version
+    const version = projectPkgVersion || rootPkgVersion;
+    allPackages.push({ name: pkg, version });
+
+    // TODO: check if this change is needed as collectWorkspaceLibrarySecondaryEntryPoints it's only needed for Angular
+    collectPackageSecondaryEntryPoints(pkg, version, allPackages, project);
   });
 
   return allPackages.reduce((shared, pkg) => {
-    const config = getNpmPackageSharedConfig(pkg.name, pkg.version);
+    const config = getNpmPackageSharedConfig(pkg.name, pkg.version, project);
     if (config) {
       shared[pkg.name] = config;
     }
@@ -216,12 +249,15 @@ function addStringDependencyToSharedConfig(
 ): void {
   if (projectGraph.nodes[dependency]) {
     sharedConfig[dependency] = { requiredVersion: false };
+    
   } else if (projectGraph.externalNodes?.[`npm:${dependency}`]) {
-    const pkgJson = readRootPackageJson();
+    const project = projectGraph.nodes[dependency]?.data;
+    const pkgJson = readProjectPackageJson(project);
     const config = getNpmPackageSharedConfig(
       dependency,
       pkgJson.dependencies?.[dependency] ??
-        pkgJson.devDependencies?.[dependency]
+        pkgJson.devDependencies?.[dependency],
+      project 
     );
 
     if (!config) {
@@ -245,4 +281,32 @@ function getEmptySharedLibrariesConfig() {
     getReplacementPlugin: () =>
       new webpack.NormalModuleReplacementPlugin(/./, () => {}),
   };
+}
+
+// Copied from packages/js/src/utils/buildable-libs-utils.ts as not to create a circ dep
+// TODO: unsure where to put it so it can be shared
+function isBuildable(target: string, node: ProjectGraphProjectNode): boolean {
+  return (
+    node.data.targets &&
+    node.data.targets[target] &&
+    node.data.targets[target].executor !== ''
+  );
+}
+
+// TODO: Copied from packages/js/src/utils/package-json/get-npm-scope.ts to prevent circ dep
+function getNpmScope(tree: Tree): string | undefined {
+  const nxJson = readNxJson(tree);
+
+  // TODO(v17): Remove reading this from nx.json
+  if (nxJson?.npmScope) {
+    return nxJson.npmScope;
+  }
+
+  const { name } = tree.exists('package.json')
+    ? readJson<{ name?: string }>(tree, 'package.json')
+    : { name: null };
+
+  if (name?.startsWith('@')) {
+    return name.split('/')[0].substring(1);
+  }
 }

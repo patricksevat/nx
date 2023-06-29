@@ -78,10 +78,11 @@ export async function getModuleFederationConfig(
   }
 
   const sharedLibraries = shareWorkspaceLibraries(
-    dependencies.workspaceLibraries
+    dependencies.workspaceLibraries,
+    projectGraph
   );
 
-  const npmPackages = sharePackages(dependencies.npmPackages);
+  const npmPackages = sharePackages(dependencies.npmPackages, project);
 
   const sharedDependencies = {
     ...sharedLibraries.getLibraries(),
