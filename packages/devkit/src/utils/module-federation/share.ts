@@ -14,6 +14,7 @@ import {
 import type { ProjectConfiguration } from 'nx/src/config/workspace-json-project-json';
 import type { ProjectGraph, ProjectGraphProjectNode } from 'nx/src/config/project-graph';
 import { requireNx } from '../../../nx';
+import { Tree, names, readJson, readNxJson } from '../../../';
 
 const { workspaceRoot, logger } = requireNx();
 
@@ -38,7 +39,7 @@ export function shareWorkspaceLibraries(
     return getEmptySharedLibrariesConfig();
   }
 
-  const pathMappings: { name: string; path: string }[] = [];
+  const pathMappings: { name: string; path: string, nameWithoutNpmScope: string }[] = [];
   for (const [key, paths] of Object.entries(tsconfigPathAliases)) {
     const library = libraries.find((lib) => lib.importKey === key);
     if (!library) {
@@ -54,12 +55,14 @@ export function shareWorkspaceLibraries(
       pathMappings.push({
         name,
         path,
+        nameWithoutNpmScope: library.name,
       })
     );
 
     pathMappings.push({
       name: key,
       path: normalize(join(workspaceRoot, paths[0])),
+      nameWithoutNpmScope: library.name,
     });
   }
 
@@ -74,22 +77,25 @@ export function shareWorkspaceLibraries(
     getLibraries: (eager?: boolean): Record<string, SharedLibraryConfig> =>
       pathMappings.reduce(
         (libraries, library) => {
-          const project = projectGraph.nodes[library.name];
+          const project = projectGraph.nodes[library.nameWithoutNpmScope];
           const isBuildableProject = project && isBuildable('build', project);
-          const version = require(join(workspaceRoot, project.data.targets.build.options.outputPath)).version;
+          
+          let sharedLibConfig: SharedLibraryConfig = { requiredVersion: false, eager };
+          
+          if(project && isBuildableProject) {
+            // TODO: perhaps make this a bit more defensive. Not sure what happens when the require fails
+            const outputVersion = require(join(workspaceRoot, project.data.targets.build.options.outputPath, 'package.json')).version;
 
-          const buildableLibConfig: SharedLibraryConfig = {
-            requiredVersion: version,
-            singleton: false,
-            strictVersion: true,
+            sharedLibConfig = {
+              requiredVersion: outputVersion || false,
+              singleton: false,
+              strictVersion: true,
+            }
           }
-
-          const defaultLibConfig: SharedLibraryConfig = { requiredVersion: false, eager };
 
           return ({
             ...libraries,
-            // TODO: update this if it's a buildable library
-            [library.name]: isBuildableProject ? buildableLibConfig : defaultLibConfig,
+            [library.name]: sharedLibConfig,
           });
         },
         {} as Record<string, SharedLibraryConfig>
@@ -285,4 +291,22 @@ function isBuildable(target: string, node: ProjectGraphProjectNode): boolean {
     node.data.targets[target] &&
     node.data.targets[target].executor !== ''
   );
+}
+
+// TODO: Copied from packages/js/src/utils/package-json/get-npm-scope.ts to prevent circ dep
+function getNpmScope(tree: Tree): string | undefined {
+  const nxJson = readNxJson(tree);
+
+  // TODO(v17): Remove reading this from nx.json
+  if (nxJson?.npmScope) {
+    return nxJson.npmScope;
+  }
+
+  const { name } = tree.exists('package.json')
+    ? readJson<{ name?: string }>(tree, 'package.json')
+    : { name: null };
+
+  if (name?.startsWith('@')) {
+    return name.split('/')[0].substring(1);
+  }
 }
