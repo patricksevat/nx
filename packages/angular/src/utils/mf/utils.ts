@@ -103,7 +103,8 @@ export async function getModuleFederationConfig(
   }
 
   const sharedLibraries = shareWorkspaceLibraries(
-    dependencies.workspaceLibraries
+    dependencies.workspaceLibraries,
+    projectGraph
   );
 
   const npmPackages = sharePackages(
@@ -114,7 +115,8 @@ export async function getModuleFederationConfig(
           (pkg) => !DEFAULT_NPM_PACKAGES_TO_AVOID.includes(pkg)
         ),
       ])
-    )
+    ),
+    projectGraph.nodes[mfConfig.name]?.data
   );
 
   DEFAULT_NPM_PACKAGES_TO_AVOID.forEach((pkgName) => {

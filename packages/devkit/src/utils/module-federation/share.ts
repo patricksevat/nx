@@ -5,13 +5,14 @@ import type {
 } from './models';
 import { AdditionalSharedConfig, SharedFunction } from './models';
 import { dirname, join, normalize } from 'path';
-import { readRootPackageJson } from './package-json';
+import { readProjectPackageJson, readRootPackageJson } from './package-json';
 import { readTsPathMappings, getRootTsConfigPath } from './typescript';
 import {
   collectPackageSecondaryEntryPoints,
   collectWorkspaceLibrarySecondaryEntryPoints,
 } from './secondary-entry-points';
-import type { ProjectGraph } from 'nx/src/config/project-graph';
+import type { ProjectConfiguration } from 'nx/src/config/workspace-json-project-json';
+import type { ProjectGraph, ProjectGraphProjectNode } from 'nx/src/config/project-graph';
 import { requireNx } from '../../../nx';
 
 const { workspaceRoot, logger } = requireNx();
@@ -25,6 +26,7 @@ const { workspaceRoot, logger } = requireNx();
  */
 export function shareWorkspaceLibraries(
   libraries: WorkspaceLibrary[],
+  projectGraph: ProjectGraph,
   tsConfigPath = process.env.NX_TSCONFIG_PATH ?? getRootTsConfigPath()
 ): SharedWorkspaceLibraryConfig {
   if (!libraries) {
@@ -71,10 +73,25 @@ export function shareWorkspaceLibraries(
       ),
     getLibraries: (eager?: boolean): Record<string, SharedLibraryConfig> =>
       pathMappings.reduce(
-        (libraries, library) => ({
-          ...libraries,
-          [library.name]: { requiredVersion: false, eager },
-        }),
+        (libraries, library) => {
+          const project = projectGraph.nodes[library.name];
+          const isBuildableProject = project && isBuildable('build', project);
+          const version = require(join(workspaceRoot, project.data.targets.build.options.outputPath)).version;
+
+          const buildableLibConfig: SharedLibraryConfig = {
+            requiredVersion: version,
+            singleton: false,
+            strictVersion: true,
+          }
+
+          const defaultLibConfig: SharedLibraryConfig = { requiredVersion: false, eager };
+
+          return ({
+            ...libraries,
+            // TODO: update this if it's a buildable library
+            [library.name]: isBuildableProject ? buildableLibConfig : defaultLibConfig,
+          });
+        },
         {} as Record<string, SharedLibraryConfig>
       ),
     getReplacementPlugin: () =>
@@ -104,11 +121,12 @@ export function shareWorkspaceLibraries(
  */
 export function getNpmPackageSharedConfig(
   pkgName: string,
-  version: string
+  version: string,
+  project: ProjectConfiguration
 ): SharedLibraryConfig | undefined {
   if (!version) {
     logger.warn(
-      `Could not find a version for "${pkgName}" in the root "package.json" ` +
+      `Could not find a version for "${pkgName}" in upward "package.json" files from ${project.root}` +
         'when collecting shared packages for the Module Federation setup. ' +
         'The package will not be shared.'
     );
@@ -128,19 +146,28 @@ export function getNpmPackageSharedConfig(
  * @param packages - Array of package names as strings
  */
 export function sharePackages(
-  packages: string[]
+  packages: string[],
+  project: ProjectConfiguration
 ): Record<string, SharedLibraryConfig> {
   const pkgJson = readRootPackageJson();
+  const projectPkgJson = readProjectPackageJson(project);
   const allPackages: { name: string; version: string }[] = [];
   packages.forEach((pkg) => {
-    const pkgVersion =
+    const projectPkgVersion =
+      projectPkgJson.dependencies?.[pkg] ?? projectPkgJson.devDependencies?.[pkg];
+    const rootPkgVersion =
       pkgJson.dependencies?.[pkg] ?? pkgJson.devDependencies?.[pkg];
-    allPackages.push({ name: pkg, version: pkgVersion });
-    collectPackageSecondaryEntryPoints(pkg, pkgVersion, allPackages);
+
+    // Local version takes precedence over global version
+    const version = projectPkgVersion || rootPkgVersion;
+    allPackages.push({ name: pkg, version });
+
+    // TODO: check if this change is needed as collectWorkspaceLibrarySecondaryEntryPoints it's only needed for Angular
+    collectPackageSecondaryEntryPoints(pkg, version, allPackages, project);
   });
 
   return allPackages.reduce((shared, pkg) => {
-    const config = getNpmPackageSharedConfig(pkg.name, pkg.version);
+    const config = getNpmPackageSharedConfig(pkg.name, pkg.version, project);
     if (config) {
       shared[pkg.name] = config;
     }
@@ -216,12 +243,15 @@ function addStringDependencyToSharedConfig(
 ): void {
   if (projectGraph.nodes[dependency]) {
     sharedConfig[dependency] = { requiredVersion: false };
+    
   } else if (projectGraph.externalNodes?.[`npm:${dependency}`]) {
-    const pkgJson = readRootPackageJson();
+    const project = projectGraph.nodes[dependency]?.data;
+    const pkgJson = readProjectPackageJson(project);
     const config = getNpmPackageSharedConfig(
       dependency,
       pkgJson.dependencies?.[dependency] ??
-        pkgJson.devDependencies?.[dependency]
+        pkgJson.devDependencies?.[dependency],
+      project 
     );
 
     if (!config) {
@@ -245,4 +275,14 @@ function getEmptySharedLibrariesConfig() {
     getReplacementPlugin: () =>
       new webpack.NormalModuleReplacementPlugin(/./, () => {}),
   };
+}
+
+// Copied from packages/js/src/utils/buildable-libs-utils.ts as not to create a circ dep
+// TODO: unsure where to put it so it can be shared
+function isBuildable(target: string, node: ProjectGraphProjectNode): boolean {
+  return (
+    node.data.targets &&
+    node.data.targets[target] &&
+    node.data.targets[target].executor !== ''
+  );
 }

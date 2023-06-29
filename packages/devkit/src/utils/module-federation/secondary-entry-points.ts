@@ -2,12 +2,13 @@ import type { WorkspaceLibrary } from './models';
 import { WorkspaceLibrarySecondaryEntryPoint } from './models';
 import { dirname, join, relative } from 'path';
 import { existsSync, lstatSync, readdirSync } from 'fs';
+import type { ProjectConfiguration } from 'nx/src/config/workspace-json-project-json';
 
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { PackageJson, readModulePackageJson } from 'nx/src/utils/package-json';
 import { requireNx } from '../../../nx';
 
-const { readJsonFile, joinPathFragments, workspaceRoot } = requireNx();
+const { readJsonFile, joinPathFragments, workspaceRoot, getNxRequirePaths } = requireNx();
 
 export function collectWorkspaceLibrarySecondaryEntryPoints(
   library: WorkspaceLibrary,
@@ -112,13 +113,17 @@ export function recursivelyCollectSecondaryEntryPointsFromDirectory(
 export function collectPackageSecondaryEntryPoints(
   pkgName: string,
   pkgVersion: string,
-  collectedPackages: { name: string; version: string }[]
+  collectedPackages: { name: string; version: string }[],
+  project: ProjectConfiguration
 ): void {
   let pathToPackage: string;
   let packageJsonPath: string;
   let packageJson: PackageJson;
   try {
-    ({ path: packageJsonPath, packageJson } = readModulePackageJson(pkgName));
+    ({ path: packageJsonPath, packageJson } = readModulePackageJson(pkgName), [
+      project.root,
+      ...getNxRequirePaths(),
+    ]);
     pathToPackage = dirname(packageJsonPath);
   } catch {
     // the package.json might not resolve if the package has the "exports"

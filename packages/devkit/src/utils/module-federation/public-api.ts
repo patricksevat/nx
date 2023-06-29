@@ -22,7 +22,7 @@ import { mapRemotes, mapRemotesForSSR } from './remotes';
 
 import { getDependentPackagesForProject } from './dependencies';
 
-import { readRootPackageJson } from './package-json';
+import { readProjectPackageJson } from './package-json';
 
 export {
   /**
@@ -96,5 +96,5 @@ export {
   /**
    * @deprecated Accessing the Module Federation Utils from the Public API of @nx/devkit is deprecated and they will be removed from the Public API in v17.
    */
-  readRootPackageJson,
+  readProjectPackageJson as readRootPackageJson,
 };

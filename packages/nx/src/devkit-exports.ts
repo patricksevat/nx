@@ -226,3 +226,8 @@ export { cacheDir } from './utils/cache-directory';
  * @category Utils
  */
 export { createProjectFileMapUsingProjectGraph } from './project-graph/file-map-utils';
+
+/**
+ * @category Utils
+ */
+export { getNxRequirePaths } from './utils/installation-directory';
