@@ -16,6 +16,7 @@ export interface ViteBuildExecutorOptions {
   watch?: object | boolean;
   target?: string | string[];
   generatePackageJson?: boolean;
+  generatePackageJsonVersionHash?: boolean;
   includeDevDependenciesInPackageJson?: boolean;
   cssCodeSplit?: boolean;
   buildLibsFromSource?: boolean;

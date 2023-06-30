@@ -37,6 +37,7 @@ export function createPackageJson(
     root?: string;
     isProduction?: boolean;
     helperDependencies?: string[];
+    versionHash?: string;
   } = {},
   fileMap: ProjectFileMap = null
 ): PackageJson {
@@ -171,6 +172,10 @@ export function createPackageJson(
   packageJson.peerDependenciesMeta &&= sortObjectByKeys(
     packageJson.peerDependenciesMeta
   );
+
+  if(options.versionHash) {
+    packageJson.version = `${packageJson.version}-${options.versionHash}`
+  }
 
   return packageJson;
 }
