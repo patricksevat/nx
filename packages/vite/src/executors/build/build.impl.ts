@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { ExecutorContext, writeJsonFile } from '@nx/devkit';
+import { ExecutorContext, readJsonFile, writeJsonFile } from '@nx/devkit';
 import { build, InlineConfig, mergeConfig } from 'vite';
 import {
   getProjectTsConfigPath,
@@ -8,15 +8,19 @@ import {
 } from '../../utils/options-utils';
 import { ViteBuildExecutorOptions } from './schema';
 import {
-  copyAssets,
   createLockFile,
   createPackageJson,
   getLockFileName,
 } from '@nx/js';
 import { existsSync, writeFileSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
+import * as fastGlob from 'fast-glob';
 import { createAsyncIterable } from '@nx/devkit/src/utils/async-iterable';
 import { registerPaths, validateTypes } from '../../utils/executor-utils';
+import { fileHasher } from 'nx/src/hasher/file-hasher';
+import { requireNx } from '@nx/devkit/nx';
+
+const { logger } = requireNx();
 
 export async function* viteBuildExecutor(
   options: ViteBuildExecutorOptions,
@@ -59,6 +63,7 @@ export async function* viteBuildExecutor(
         target: context.targetName,
         root: context.root,
         isProduction: !options.includeDevDependenciesInPackageJson, // By default we remove devDependencies since this is a production build.
+        versionHash: options.generatePackageJsonVersionHash && await getHashFromDeclarationFiles(normalizedOptions.outputPath)
       }
     );
 
@@ -77,19 +82,14 @@ export async function* viteBuildExecutor(
     existsSync(libraryPackageJson) &&
     rootPackageJson !== libraryPackageJson
   ) {
-    await copyAssets(
-      {
-        outputPath: normalizedOptions.outputPath,
-        assets: [
-          {
-            input: projectRoot,
-            output: '.',
-            glob: 'package.json',
-          },
-        ],
-      },
-      context
-    );
+    const projectPackageJson = readJsonFile(libraryPackageJson);
+    if(options.generatePackageJsonVersionHash) {
+      const versionHash = await getHashFromDeclarationFiles(normalizedOptions.outputPath)
+
+      projectPackageJson.version = `${projectPackageJson.version}-${versionHash}`
+    }
+
+    writeJsonFile(join(normalizedOptions.outputPath, 'package.json'), projectPackageJson)
   }
 
   if ('on' in watcherOrOutput) {
@@ -136,6 +136,20 @@ function normalizeOptions(options: ViteBuildExecutorOptions) {
   }
 
   return normalizedOptions;
+}
+
+async function getHashFromDeclarationFiles(projectOutputPath: string): Promise<string> {
+  const declarationGlobPattern = '**/*.d.ts'
+  const declarationFiles = await fastGlob(declarationGlobPattern, {
+    cwd: projectOutputPath
+  });
+
+  if(declarationFiles.length === 0) {
+    logger.warn(`Could not find any generated .d.ts files in ${projectOutputPath}. Have you added 'vite-plugin-dts' in your vite.config.ts?`)
+    return '';
+  }
+
+  return fileHasher.hashFilesMatchingGlobs(projectOutputPath, [declarationGlobPattern]);
 }
 
 export default viteBuildExecutor;

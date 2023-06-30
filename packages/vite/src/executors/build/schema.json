@@ -158,6 +158,9 @@
       "description": "Generate a package.json for the build output.",
       "type": "boolean"
     },
+    "generatePackageJsonVersionHash": {
+      "description": "Append a hash to the {outputPath}/package.json version, based on the generated .d.ts files"
+    },
     "includeDevDependenciesInPackageJson": {
       "description": "Include devDependencies in the generated package.json.",
       "type": "boolean"
